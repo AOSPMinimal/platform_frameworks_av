@@ -4194,13 +4194,25 @@ void CameraService::updateStatus(StatusInternal status, const String8& cameraId,
         ALOGE("%s: Invalid camera id %s, skipping", __FUNCTION__, cameraId.string());
         return;
     }
+    bool supportsHAL3 = false;
+    // supportsCameraApi also holds mInterfaceMutex, we can't call it in the
+    // HIDL onStatusChanged wrapper call (we'll hold mStatusListenerLock and
+    // mInterfaceMutex together, which can lead to deadlocks)
+    binder::Status sRet =
+            supportsCameraApi(String16(cameraId), hardware::ICameraService::API_VERSION_2,
+                    &supportsHAL3);
+    if (!sRet.isOk()) {
+        ALOGW("%s: Failed to determine if device supports HAL3 %s, supportsCameraApi call failed",
+                __FUNCTION__, cameraId.string());
+        return;
+    }
 
     // Collect the logical cameras without holding mStatusLock in updateStatus
     // as that can lead to a deadlock(b/162192331).
     auto logicalCameraIds = getLogicalCameras(cameraId);
     // Update the status for this camera state, then send the onStatusChangedCallbacks to each
     // of the listeners with both the mStatusLock and mStatusListenerLock held
-    state->updateStatus(status, cameraId, rejectSourceStates, [this, &deviceKind,
+    state->updateStatus(status, cameraId, rejectSourceStates, [this, &deviceKind, &supportsHAL3,
                         &logicalCameraIds]
             (const String8& cameraId, StatusInternal status) {
 
@@ -4228,8 +4240,8 @@ void CameraService::updateStatus(StatusInternal status, const String8& cameraId,
                 bool isVendorListener = listener->isVendorListener();
                 if (shouldSkipStatusUpdates(deviceKind, isVendorListener,
                         listener->getListenerPid(), listener->getListenerUid()) ||
-                        isVendorListener) {
-                    ALOGV("Skipping discovery callback for system-only camera device %s",
+                        (isVendorListener && !supportsHAL3)) {
+                    ALOGV("Skipping discovery callback for system-only camera/HAL1 device %s",
                             cameraId.c_str());
                     continue;
                 }
